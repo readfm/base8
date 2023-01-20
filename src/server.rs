@@ -25,6 +25,8 @@ use hyper::{
 use rusqlite::OpenFlags;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -46,6 +48,9 @@ use tungstenite::error::Error as WsError;
 use tungstenite::handshake;
 use tungstenite::protocol::Message;
 use tungstenite::protocol::WebSocketConfig;
+use std::env;
+
+use mime_guess;
 
 /// Handle arbitrary HTTP requests, including for WebSocket upgrades.
 async fn handle_web_request(
@@ -58,6 +63,44 @@ async fn handle_web_request(
     shutdown: Receiver<()>,
     safe_to_read: Arc<Mutex<u64>>,
 ) -> Result<Response<Body>, Infallible> {
+
+    // path from folder domain
+
+    //index.html if empty
+    let file_path = request.uri().path();
+    let file_path = if file_path == "/" {
+        "/index.html"
+    } else {
+        file_path
+    };
+
+    //domain nam
+
+    let host = request.headers().get("host").unwrap().to_str().unwrap();
+
+    let domain = host.split(':').next().unwrap();
+    //let port = host.split(':').last().unwrap();
+
+    //current dirrectory
+    env::current_dir().unwrap();
+
+    let path = format!("{}{}", domain, file_path);
+
+    let path = Path::new(path.as_str());
+
+
+    // check if file exists
+    if !path.exists() {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            // show the path that was requested
+            .body(Body::from(format!("Not found: {} at {}", path.display(), std::env::current_dir().unwrap().display())))
+            .unwrap());
+    }
+
+    // prepend domain name to path
+
+
     match (
         request.uri().path(),
         request.headers().contains_key(header::UPGRADE),
@@ -118,14 +161,14 @@ async fn handle_web_request(
                                     broadcast,
                                     event_tx,
                                     shutdown,
-				    safe_to_read,
+                                    safe_to_read,
                                 ));
                             }
                             // todo: trace, don't print...
                             Err(e) => println!(
                                 "error when trying to upgrade connection \
-                                 from address {} to websocket connection. \
-                                 Error is: {}",
+                                from address {} to websocket connection. \
+                                Error is: {}",
                                 remote_addr, e
                             ),
                         }
@@ -167,16 +210,65 @@ async fn handle_web_request(
             }
             Ok(Response::builder()
                 .status(200)
-                .header("Content-Type", "text/plain")
-                .body(Body::from("Please use a Nostr client to connect."))
+                .header("Content-Type", "text/html")
+                .body(Body::from(
+                    tokio::fs::read(
+                        path,
+                    ).await.expect("could not read index.html"),
+                ))
                 .unwrap())
         }
+        // put file contents with hasheded name
         (_, _) => {
-            //handle any other url
-            Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("Nothing here."))
-                .unwrap())
+            // if get request
+            if request.method() == &http::Method::GET{
+                let mime = mime_guess::from_path(path).first_or_octet_stream();
+
+                return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", mime.to_string())
+                .body(Body::from(
+                    tokio::fs::read(
+                        path,
+                    ).await.expect("could not read file"),
+                ))
+                .unwrap(),
+                );
+            }else if request.method() == &http::Method::PUT{
+                // write into file\
+                let mut file = tokio::fs::File::create(path).await.expect("could not create file");
+                let mut body = request.into_body();
+
+                //stream request body into the file
+                while let Some(chunk) = body.next().await {
+                    let data = chunk.expect("Error reading request body");
+
+                    file.write_all(&data).await.expect("Error writing to file");
+                };
+
+                //return that all ok
+                return Ok(Response::builder().status(StatusCode::OK).body(Body::from("Uploaded")).unwrap());
+            }
+            /* 
+            else if request.method() == &http::Method::POST{
+                //read post json
+                let mut body = request.into_body();
+                //db
+            }
+            */
+            else{
+                let mime = mime_guess::from_path(path).first_or_octet_stream();
+                return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", mime.to_string())
+                .body(Body::from(
+                    tokio::fs::read(
+                        path,
+                    ).await.expect("could not read file"),
+                ))
+                .unwrap(),
+                );
+            }
         }
     }
 }

@@ -15,6 +15,8 @@ pub enum HexSearch {
 
 /// Check if a string contains only f chars
 fn is_all_fs(s: &str) -> bool {
+
+    let v: Vec<&str> = "1abc2abc3".matches(char::is_numeric).collect();
     s.chars().all(|x| x == 'f' || x == 'F')
 }
 
